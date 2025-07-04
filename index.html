@@ -191,9 +191,23 @@
             };
 
             const handleFileUpload = (event) => {
+                console.log('File upload triggered');
                 const file = event.target.files[0];
-                if (file && file.type.startsWith('image/')) {
-                    processReceiptImage(file);
+                console.log('Selected file:', file);
+                
+                if (file) {
+                    console.log('File type:', file.type);
+                    console.log('File size:', file.size);
+                    
+                    if (file.type.startsWith('image/')) {
+                        console.log('Valid image file, starting OCR processing...');
+                        processReceiptImage(file);
+                    } else {
+                        console.log('Invalid file type');
+                        alert('Please select an image file (JPG, PNG, etc.)');
+                    }
+                } else {
+                    console.log('No file selected');
                 }
             };
 
