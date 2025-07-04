@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Receipt Splitter</title>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/tesseract.js@4.1.1/dist/tesseract.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+        const { Plus, Trash2, Users, Calculator, DollarSign, Receipt, Upload, Camera, FileText } = lucide;
+
+        const ReceiptSplitter = () => {
+            const [people, setPeople] = useState([]);
+            const [items, setItems] = useState([]);
+            const [tax, setTax] = useState(0);
+            const [tip, setTip] = useState(0);
+            const [taxSplitMethod, setTaxSplitMethod] = useState('ratio');
+            const [tipSplitMethod, setTipSplitMethod] = useState('equal');
+            const [newPersonName, setNewPersonName] = useState('');
+            const [newItemName, setNewItemName] = useState('');
+            const [newItemPrice, setNewItemPrice] = useState('');
+            const [isProcessing, setIsProcessing] = useState(false);
+            const [uploadedImage, setUploadedImage] = useState(null);
+            const [processingStatus, setProcessingStatus] = useState('');
+
+            // Parse receipt text to extract items and prices
+            const parseReceiptText = (text) => {
+                const lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 2);
+                const items = [];
+                let detectedTax = 0;
+                
+                // Improved price pattern
+                const priceRegex = /(?:\$?\s*)?(\d{1,3}[,.]?\d{0,2})/g;
+                
+                // Tax keywords
+                const taxKeywords = ['tax', 'hst', 'gst', 'pst', 'sales tax', 'vat', 'tvh'];
+                
+                // Skip patterns
+                const skipPatterns = [
+                    /receipt/i, /thank/i, /visit/i, /subtotal/i, /total/i, /change/i,
+                    /payment/i, /card/i, /cash/i, /debit/i, /credit/i, /balance/i,
+                    /date/i, /time/i, /store/i, /location/i, /phone/i, /address/i,
+                    /qty/i, /quantity/i, /item/i, /^[\d\s\-\/:.]*$/
+                ];
+                
+                lines.forEach((line) => {
+                    const lowerLine = line.toLowerCase();
+                    
+                    // Skip common non-item lines
+                    if (skipPatterns.some(pattern => pattern.test(line)) || line.length < 3) {
+                        return;
+                    }
+                    
+                    // Check for tax lines
+                    const isTaxLine = taxKeywords.some(keyword => lowerLine.includes(keyword));
+                    if (isTaxLine) {
+                        const prices = line.match(priceRegex);
+                        if (prices && prices.length > 0) {
+                            const taxStr = prices[prices.length - 1].replace(/[$,]/g, '').replace(',', '.');
+                            const taxAmount = parseFloat(taxStr);
+                            if (!isNaN(taxAmount) && taxAmount > 0 && taxAmount < 100) {
+                                detectedTax = Math.max(detectedTax, taxAmount);
+                            }
+                        }
+                        return;
+                    }
+                    
+                    // Look for item lines with prices
+                    const priceMatches = [...line.matchAll(priceRegex)];
+                    if (priceMatches.length > 0) {
+                        const lastMatch = priceMatches[priceMatches.length - 1];
+                        const priceStr = lastMatch[1].replace(/[$,]/g, '').replace(',', '.');
+                        const price = parseFloat(priceStr);
+                        
+                        if (!isNaN(price) && price > 0.50 && price < 500) {
+                            const priceIndex = lastMatch.index;
+                            let itemName = line.substring(0, priceIndex).trim();
+                            
+                            // Clean up item name
+                            itemName = itemName.replace(/^\d+[\s\-\.]*/, '');
+                            itemName = itemName.replace(/\s*x\s*\d+\s*$/, '');
+                            itemName = itemName.replace(/[^\w\s&'-]/g, ' ');
+                            itemName = itemName.replace(/\s+/g, ' ').trim();
+                            
+                            if (itemName.length >= 2) {
+                                items.push({
+                                    id: Date.now() + Math.random(),
+                                    name: itemName,
+                                    price: price,
+                                    assignments: []
+                                });
+                            }
+                        }
+                    }
+                });
+                
+                return { items, tax: detectedTax };
+            };
+
+            // Process receipt image with OCR
+            const processReceiptImage = async (file) => {
+                if (!file) return;
+                
+                setIsProcessing(true);
+                setProcessingStatus('Preparing image...');
+                
+                try {
+                    // Create image URL for preview
+                    const imageUrl = URL.createObjectURL(file);
+                    setUploadedImage(imageUrl);
+                    
+                    setProcessingStatus('Initializing OCR...');
+                    
+                    // Create worker and perform OCR
+                    const worker = await Tesseract.createWorker('eng');
+                    setProcessingStatus('Reading text from image... (this may take 30-60 seconds)');
+                    
+                    const { data: { text, confidence } } = await worker.recognize(file);
+                    console.log('OCR completed with confidence:', confidence);
+                    console.log('Raw OCR text:', text);
+                    
+                    await worker.terminate();
+                    
+                    setProcessingStatus('Parsing receipt items...');
+                    
+                    // Parse the extracted text
+                    const { items: parsedItems, tax: detectedTax } = parseReceiptText(text);
+                    
+                    // Update state with parsed results
+                    if (parsedItems.length > 0) {
+                        setItems(parsedItems);
+                        if (detectedTax > 0) {
+                            setTax(detectedTax.toString());
+                        }
+                        
+                        setProcessingStatus('✅ Complete!');
+                        setTimeout(() => setProcessingStatus(''), 2000);
+                        
+                        alert(`✅ Successfully extracted ${parsedItems.length} items from receipt!\n\nItems found:\n${parsedItems.map(item => `• ${item.name}: $${item.price.toFixed(2)}`).join('\n')}\n\nYou can now assign these items to people!`);
+                    } else {
+                        const preview = text.substring(0, 500);
+                        setProcessingStatus('❌ No items detected');
+                        setTimeout(() => setProcessingStatus(''), 3000);
+                        
+                        alert(`❌ No items automatically detected.\n\nRaw OCR text preview:\n"${preview}${text.length > 500 ? '...' : ''}"\n\nPlease add items manually or try a clearer image.`);
+                    }
+                    
+                } catch (error) {
+                    console.error('OCR processing error:', error);
+                    setProcessingStatus('❌ Processing failed');
+                    setTimeout(() => setProcessingStatus(''), 3000);
+                    
+                    alert(`❌ OCR failed: ${error.message}\n\nPlease try a clearer image or add items manually.`);
+                } finally {
+                    setIsProcessing(false);
+                }
+            };
+
+            // Handle file upload
+            const handleFileUpload = (event) => {
+                const file = event.target.files[0];
+                if (file && file.type.startsWith('image/')) {
+                    processReceiptImage(file);
+                }
+            };
+
+            // Add person
+            const addPerson = () => {
+                if (newPersonName.trim() && !people.some(p => p.name.toLowerCase() === newPersonName.toLowerCase())) {
+                    setPeople([...people, { id: Date.now(), name: newPersonName.trim() }]);
+                    setNewPersonName('');
+                }
+            };
+
+            // Remove person
+            const removePerson = (id) => {
+                setPeople(people.filter(p => p.id !== id));
+                setItems(items.map(item => ({
+                    ...item,
+                    assignments: item.assignments.filter(a => a.personId !== id)
+                })));
+            };
+
+            // Add item
+            const addItem = () => {
+                if (newItemName.trim() && newItemPrice && parseFloat(newItemPrice) > 0) {
+                    setItems([...items, {
+                        id: Date.now(),
+                        name: newItemName.trim(),
+                        price: parseFloat(newItemPrice),
+                        assignments: []
+                    }]);
+                    setNewItemName('');
+                    setNewItemPrice('');
+                }
+            };
+
+            // Remove item
+            const removeItem = (id) => {
+                setItems(items.filter(item => item.id !== id));
+            };
+
+            // Update assignment for an item
+            const updateAssignment = (itemId, personId, fraction) => {
+                setItems(items.map(item => {
+                    if (item.id !== itemId) return item;
+                    
+                    const existingAssignment = item.assignments.find(a => a.personId === personId);
+                    let newAssignments = [...item.assignments];
+                    
+                    if (fraction === 0 || fraction === '') {
+                        newAssignments = newAssignments.filter(a => a.personId !== personId);
+                    } else if (existingAssignment) {
+                        newAssignments = newAssignments.map(a => 
+                            a.personId === personId ? { ...a, fraction: parseFloat(fraction) } : a
+                        );
+                    } else {
+                        newAssignments.push({ personId, fraction: parseFloat(fraction) });
+                    }
+                    
+                    return { ...item, assignments: newAssignments };
+                }));
+            };
+
+            // Calculate totals
+            const calculateTotals = () => {
+                const subtotal = items.reduce((sum, item) => sum + item.price, 0);
+                const totalTax = parseFloat(tax) || 0;
+                const totalTip = parseFloat(tip) || 0;
+                const grandTotal = subtotal + totalTax + totalTip;
+
+                const personTotals = {};
+                people.forEach(person => {
+                    personTotals[person.id] = {
+                        name: person.name,
+                        items: 0,
+                        tax: 0,
+                        tip: 0,
+                        total: 0
+                    };
+                });
+
+                // Calculate item costs for each person
+                items.forEach(item => {
+                    const totalAssigned = item.assignments.reduce((sum, a) => sum + a.fraction, 0);
+                    if (totalAssigned > 0) {
+                        item.assignments.forEach(assignment => {
+                            const personShare = (assignment.fraction / totalAssigned) * item.price;
+                            if (personTotals[assignment.personId]) {
+                                personTotals[assignment.personId].items += personShare;
+                            }
+                        });
+                    }
+                });
+
+                // Calculate tax distribution
+                const totalItemsAssigned = Object.values(personTotals).reduce((sum, p) => sum + p.items, 0);
+                if (totalItemsAssigned > 0) {
+                    Object.keys(personTotals).forEach(personId => {
+                        const person = personTotals[personId];
+                        if (taxSplitMethod === 'equal') {
+                            person.tax = totalTax / people.length;
+                        } else if (taxSplitMethod === 'ratio') {
+                            person.tax = (person.items / totalItemsAssigned) * totalTax;
+                        }
+                    });
+                }
+
+                // Calculate tip distribution
+                Object.keys(personTotals).forEach(personId => {
+                    const person = personTotals[personId];
+                    if (tipSplitMethod === 'equal') {
+                        person.tip = totalTip / people.length;
+                    } else if (tipSplitMethod === 'ratio') {
+                        person.tip = (person.items / totalItemsAssigned) * totalTip;
+                    }
+                });
+
+                // Calculate totals
+                Object.keys(personTotals).forEach(personId => {
+                    const person = personTotals[personId];
+                    person.total = person.items + person.tax + person.tip;
+                });
+
+                return {
+                    subtotal,
+                    totalTax,
+                    totalTip,
+                    grandTotal,
+                    personTotals: Object.values(personTotals)
+                };
+            };
+
+            const totals = calculateTotals();
+
+            return React.createElement('div', {className: "max-w-4xl mx-auto p-6 bg-gray-50 min-h-screen"},
+                React.createElement('div', {className: "bg-white rounded-lg shadow-lg p-6"},
+                    React.createElement('div', {className: "flex items-center gap-3 mb-6"},
+                        React.createElement(Receipt, {className: "w-8 h-8 text-blue-600"}),
+                        React.createElement('h1', {className: "text-3xl font-bold text-gray-800"}, "Receipt Splitter with OCR")
+                    ),
+
+                    // Receipt Upload Section
+                    React.createElement('div', {className: "mb-8"},
+                        React.createElement('div', {className: "flex items-center gap-2 mb-4"},
+                            React.createElement(Camera, {className: "w-5 h-5 text-gray-600"}),
+                            React.createElement('h2', {className: "text-xl font-semibold text-gray-800"}, "Upload Receipt")
+                        ),
+                        
+                        React.createElement('div', {className: "border-2 border-dashed border-gray-300 rounded-lg p-6 text-center"},
+                            uploadedImage ? 
+                                React.createElement('div', {className: "space-y-4"},
+                                    React.createElement('img', {
+                                        src: uploadedImage,
+                                        alt: "Uploaded receipt",
+                                        className: "max-w-full h-64 object-contain mx-auto rounded-lg shadow-md border"
+                                    }),
+                                    React.createElement('div', {className: "flex justify-center gap-4"},
+                                        React.createElement('label', {className: "px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 cursor-pointer flex items-center gap-2"},
+                                            React.createElement(Upload, {className: "w-4 h-4"}),
+                                            "Upload Different Receipt",
+                                            React.createElement('input', {
+                                                type: "file",
+                                                accept: "image/*",
+                                                onChange: handleFileUpload,
+                                                className: "hidden"
+                                            })
+                                        ),
+                                        React.createElement('button', {
+                                            onClick: () => {
+                                                setUploadedImage(null);
+                                                setItems([]);
+                                                setTax(0);
+                                            },
+                                            className: "px-4 py-2 bg-gray-600 text-white rounded-md hover:bg-gray-700 flex items-center gap-2"
+                                        },
+                                            React.createElement(Trash2, {className: "w-4 h-4"}),
+                                            "Clear Receipt"
+                                        )
+                                    )
+                                ) :
+                                React.createElement('div', {className: "space-y-4"},
+                                    React.createElement('div', {className: "flex justify-center"},
+                                        React.createElement(FileText, {className: "w-12 h-12 text-gray-400"})
+                                    ),
+                                    React.createElement('div', {},
+                                        React.createElement('p', {className: "text-gray-600 mb-2"}, "Upload a photo of your receipt to automatically extract items with OCR"),
+                                        React.createElement('p', {className: "text-sm text-gray-500"}, "Items will be detected automatically, then you can assign them to people")
+                                    ),
+                                    React.createElement('label', {className: "inline-flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-md hover:bg-blue-700 cursor-pointer"},
+                                        React.createElement(Upload, {className: "w-5 h-5"}),
+                                        "Choose Receipt Image",
+                                        React.createElement('input', {
+                                            type: "file",
+                                            accept: "image/*",
+                                            onChange: handleFileUpload,
+                                            className: "hidden"
+                                        })
+                                    )
+                                ),
+                            
+                            isProcessing && React.createElement('div', {className: "mt-6 p-4 bg-blue-50 border border-blue-200 rounded-lg"},
+                                React.createElement('div', {className: "flex flex-col items-center gap-3"},
+                                    React.createElement('div', {className: "animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"}),
+                                    React.createElement('div', {className: "text-center"},
+                                        React.createElement('div', {className: "text-blue-700 font-semibold text-lg mb-2"}, processingStatus || 'Processing...'),
+                                        React.createElement('p', {className: "text-blue-600 mb-2"}, "OCR is reading your receipt..."),
+                                        React.createElement('p', {className: "text-blue-500 text-sm"}, "This may take 30-60 seconds for complex receipts")
+                                    )
+                                )
+                            )
+                        )
+                    ),
+
+                    // People Section
+                    React.createElement('div', {className: "mb-8"},
+                        React.createElement('div', {className: "flex items-center gap-2 mb-4"},
+                            React.createElement(Users, {className: "w-5 h-5 text-gray-600"}),
+                            React.createElement('h2', {className: "text-xl font-semibold text-gray-800"}, "People")
+                        ),
+                        
+                        React.createElement('div', {className: "flex gap-2 mb-4"},
+                            React.createElement('input', {
+                                type: "text",
+                                placeholder: "Enter person's name",
+                                value: newPersonName,
+                                onChange: (e) => setNewPersonName(e.target.value),
+                                onKeyPress: (e) => e.key === 'Enter' && addPerson(),
+                                className: "flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            }),
+                            React.createElement('button', {
+                                onClick: addPerson,
+                                className: "px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 flex items-center gap-2"
+                            },
+                                React.createElement(Plus, {className: "w-4 h-4"}),
+                                "Add Person"
+                            )
+                        ),
+
+                        React.createElement('div', {className: "flex flex-wrap gap-2"},
+                            people.map(person => 
+                                React.createElement('div', {key: person.id, className: "flex items-center gap-2 bg-blue-100 px-3 py-1 rounded-full"},
+                                    React.createElement('span', {className: "text-blue-800 font-medium"}, person.name),
+                                    React.createElement('button', {
+                                        onClick: () => removePerson(person.id),
+                                        className: "text-blue-600 hover:text-red-600"
+                                    },
+                                        React.createElement(Trash2, {className: "w-4 h-4"})
+                                    )
+                                )
+                            )
+                        )
+                    ),
+
+                    // Items Section
+                    React.createElement('div', {className: "mb-8"},
+                        React.createElement('div', {className: "flex items-center gap-2 mb-4"},
+                            React.createElement(Calculator, {className: "w-5 h-5 text-gray-600"}),
+                            React.createElement('h2', {className: "text-xl font-semibold text-gray-800"}, "Items"),
+                            items.length > 0 && React.createElement('span', {className: "bg-green-100 text-green-800 px-2 py-1 rounded-full text-sm"}, 
+                                `${items.length} items ${uploadedImage ? 'detected' : 'added'}`
+                            )
+                        ),
+                        
+                        React.createElement('div', {className: "flex gap-2 mb-4"},
+                            React.createElement('input', {
+                                type: "text",
+                                placeholder: "Item name",
+                                value: newItemName,
+                                onChange: (e) => setNewItemName(e.target.value),
+                                className: "flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            }),
+                            React.createElement('input', {
+                                type: "number",
+                                placeholder: "Price",
+                                step: "0.01",
+                                value: newItemPrice,
+                                onChange: (e) => setNewItemPrice(e.target.value),
+                                onKeyPress: (e) => e.key === 'Enter' && addItem(),
+                                className: "w-24 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            }),
+                            React.createElement('button', {
+                                onClick: addItem,
+                                className: "px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 flex items-center gap-2"
+                            },
+                                React.createElement(Plus, {className: "w-4 h-4"}),
+                                "Add Item"
+                            )
+                        ),
+
+                        React.createElement('div', {className: "space-y-4"},
+                            items.map(item => 
+                                React.createElement('div', {key: item.id, className: "border border-gray-200 rounded-lg p-4"},
+                                    React.createElement('div', {className: "flex justify-between items-start mb-3"},
+                                        React.createElement('div', {},
+                                            React.createElement('h3', {className: "font-semibold text-gray-800"}, item.name),
+                                            React.createElement('p', {className: "text-green-600 font-medium"}, `$${item.price.toFixed(2)}`)
+                                        ),
+                                        React.createElement('button', {
+                                            onClick: () => removeItem(item.id),
+                                            className: "text-red-600 hover:text-red-800"
+                                        },
+                                            React.createElement(Trash2, {className: "w-4 h-4"})
+                                        )
+                                    ),
+                                    
+                                    React.createElement('div', {className: "grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3"},
+                                        people.map(person => {
+                                            const assignment = item.assignments.find(a => a.personId === person.id);
+                                            return React.createElement('div', {key: person.id, className: "flex items-center gap-2"},
+                                                React.createElement('label', {className: "text-sm text-gray-600 flex-1"}, person.name),
+                                                React.createElement('input', {
+                                                    type: "number",
+                                                    step: "0.1",
+                                                    min: "0",
+                                                    placeholder: "0",
+                                                    value: assignment?.fraction || '',
+                                                    onChange: (e) => updateAssignment(item.id, person.id, e.target.value),
+                                                    className: "w-16 px-2 py-1 border border-gray-300 rounded text-center focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                                })
+                                            );
+                                        })
+                                    )
+                                )
+                            )
+                        )
+                    ),
+
+                    // Tax and Tip Section
+                    React.createElement('div', {className: "mb-8"},
+                        React.createElement('div', {className: "flex items-center gap-2 mb-4"},
+                            React.createElement(DollarSign, {className: "w-5 h-5 text-gray-600"}),
+                            React.createElement('h2', {className: "text-xl font-semibold text-gray-800"}, "Tax & Tip")
+                        ),
+                        
+                        React.createElement('div', {className: "grid grid-cols-1 md:grid-cols-2 gap-6"},
+                            React.createElement('div', {},
+                                React.createElement('label', {className: "block text-sm font-medium text-gray-700 mb-2"}, "Tax Amount"),
+                                React.createElement('input', {
+                                    type: "number",
+                                    step: "0.01",
+                                    value: tax,
+                                    onChange: (e) => setTax(e.target.value),
+                                    className: "w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                }),
+                                React.createElement('div', {className: "mt-2"},
+                                    React.createElement('label', {className: "block text-sm text-gray-600"}, "Split Method:"),
+                                    React.createElement('select', {
+                                        value: taxSplitMethod,
+                                        onChange: (e) => setTaxSplitMethod(e.target.value),
+                                        className: "mt-1 w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    },
+                                        React.createElement('option', {value: "equal"}, "Equal Split"),
+                                        React.createElement('option', {value: "ratio"}, "By Item Ratio")
+                                    )
+                                )
+                            ),
+                            
+                            React.createElement('div', {},
+                                React.createElement('label', {className: "block text-sm font-medium text-gray-700 mb-2"}, "Tip Amount"),
+                                React.createElement('input', {
+                                    type: "number",
+                                    step: "0.01",
+                                    value: tip,
+                                    onChange: (e) => setTip(e.target.value),
+                                    className: "w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                }),
+                                React.createElement('div', {className: "mt-2"},
+                                    React.createElement('label', {className: "block text-sm text-gray-600"}, "Split Method:"),
+                                    React.createElement('select', {
+                                        value: tipSplitMethod,
+                                        onChange: (e) => setTipSplitMethod(e.target.value),
+                                        className: "mt-1 w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    },
+                                        React.createElement('option', {value: "equal"}, "Equal Split"),
+                                        React.createElement('option', {value: "ratio"}, "By Item Ratio")
+                                    )
+                                )
+                            )
+                        )
+                    ),
+
+                    // Summary Section
+                    React.createElement('div', {className: "bg-gray-50 rounded-lg p-6"},
+                        React.createElement('h2', {className: "text-xl font-semibold text-gray-800 mb-4"}, "Summary"),
+                        
+                        React.createElement('div', {className: "grid grid-cols-1 md:grid-cols-2 gap-6"},
+                            React.createElement('div', {},
+                                React.createElement('h3', {className: "font-semibold text-gray-700 mb-3"}, "Receipt Totals"),
+                                React.createElement('div', {className: "space-y-2 text-sm"},
+                                    React.createElement('div', {className: "flex justify-between"},
+                                        React.createElement('span', {}, "Subtotal:"),
+                                        React.createElement('span', {}, `$${totals.subtotal.toFixed(2)}`)
+                                    ),
+                                    React.createElement('div', {className: "flex justify-between"},
+                                        React.createElement('span', {}, "Tax:"),
+                                        React.createElement('span', {}, `$${totals.totalTax.toFixed(2)}`)
