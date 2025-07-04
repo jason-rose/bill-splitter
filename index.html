@@ -7,7 +7,7 @@
     <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <script src="https://unpkg.com/tesseract.js@4.1.1/dist/tesseract.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4.1.1/dist/tesseract.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body>
@@ -143,6 +143,11 @@
                     const imageUrl = URL.createObjectURL(file);
                     setUploadedImage(imageUrl);
                     
+                    // Check if Tesseract is available
+                    if (typeof Tesseract === 'undefined') {
+                        throw new Error('OCR library failed to load. Please refresh the page and try again.');
+                    }
+                    
                     setProcessingStatus('Initializing OCR...');
                     const worker = await Tesseract.createWorker('eng');
                     setProcessingStatus('Reading text from image... (this may take 30-60 seconds)');
@@ -163,7 +168,7 @@
                         }
                         setProcessingStatus('✅ Complete!');
                         setTimeout(() => setProcessingStatus(''), 2000);
-                        alert(`✅ Successfully extracted ${parsedItems.length} items!\n\n${parsedItems.map(item => `• ${item.name}: $${item.price.toFixed(2)}`).join('\n')}\n\nYou can now assign these items to people!`);
+                        alert(`✅ Successfully extracted ${parsedItems.length} items!\n\n${parsedItems.map(item => `• ${item.name}: ${item.price.toFixed(2)}`).join('\n')}\n\nYou can now assign these items to people!`);
                     } else {
                         const preview = text.substring(0, 500);
                         setProcessingStatus('❌ No items detected');
@@ -174,7 +179,12 @@
                     console.error('OCR error:', error);
                     setProcessingStatus('❌ Processing failed');
                     setTimeout(() => setProcessingStatus(''), 3000);
-                    alert(`❌ OCR failed: ${error.message}\n\nPlease try a clearer image or add items manually.`);
+                    
+                    if (error.message.includes('OCR library failed to load')) {
+                        alert(`❌ ${error.message}`);
+                    } else {
+                        alert(`❌ OCR failed: ${error.message || 'Unknown error'}\n\nPlease try:\n• Refreshing the page\n• A clearer image\n• Adding items manually`);
+                    }
                 } finally {
                     setIsProcessing(false);
                 }
